@@ -1,22 +1,27 @@
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
 
+
 void sendSpotifyVolume(int volume);
 void drawScreen();
 void fetchPlaybackInfo();
 
+
 const char* ssid = "";
 const char* password = "";
-String spotifyAccessToken = "";
+String spotifyAccessToken =
+  "";
 
 const int potPin = 34;
-int lastVolume = -1;
 
 String currentSong = "";
 String currentArtist = "";
+String activeDeviceId = "";
+
 int currentVolume = 0;
 int progressMs = 0;
 int durationMs = 1;
@@ -25,23 +30,36 @@ int scrollOffset = 0;
 unsigned long lastScroll = 0;
 const int scrollSpeed = 30;
 
+
 unsigned long lastUpdate = 0;
 const unsigned long updateInterval = 2000;
+
+
+int lastVolume = -1;
+
 
 U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(
   U8G2_R0, U8X8_PIN_NONE, 22, 21
 );
 
+
 void setup() {
   Serial.begin(115200);
+  delay(1000);
 
   u8g2.begin();
   u8g2.setFont(u8g2_font_7x14_tf);
 
+  Serial.println("Connecting to WiFi...");
   WiFi.begin(ssid, password);
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(300);
+    Serial.print(".");
   }
+
+  Serial.println("\nWiFi connected");
+  Serial.println(WiFi.localIP());
 
   fetchPlaybackInfo();
 }
@@ -51,6 +69,8 @@ void loop() {
   int volume = map(raw, 0, 4095, 0, 100);
 
   if (abs(volume - lastVolume) > 3) {
+    Serial.print("Sending volume: ");
+    Serial.println(volume);
     sendSpotifyVolume(volume);
     lastVolume = volume;
   }
@@ -67,8 +87,6 @@ void loop() {
 void drawScreen() {
   u8g2.clearBuffer();
 
-  u8g2.setFont(u8g2_font_7x14_tf);
-
   const int volumeBarWidth = 12;
   const int padding = 6;
   const int textAreaWidth = 128 - volumeBarWidth - padding;
@@ -76,12 +94,7 @@ void drawScreen() {
   String line1 = currentSong + " - " + currentArtist;
   int textWidth = u8g2.getStrWidth(line1.c_str());
 
-  u8g2.setClipWindow(
-    0,              // left
-    0,              // top
-    textAreaWidth,  // right boundary
-    16              // text area height
-  );
+  u8g2.setClipWindow(0, 0, textAreaWidth, 16);
 
   if (textWidth <= textAreaWidth) {
     int x = (textAreaWidth - textWidth) / 2;
@@ -92,17 +105,20 @@ void drawScreen() {
       lastScroll = millis();
     }
 
-    if (scrollOffset > textWidth + 30)
+    int gap = 30;
+    int cycleWidth = textWidth + gap;
+
+    if (scrollOffset >= cycleWidth)
       scrollOffset = 0;
 
     u8g2.drawStr(-scrollOffset, 14, line1.c_str());
+    u8g2.drawStr(-scrollOffset + cycleWidth, 14, line1.c_str());
   }
 
   u8g2.setMaxClipWindow();
 
   int barY = 20;
   int barHeight = 6;
-
   int progressWidth = map(progressMs, 0, durationMs, 0, textAreaWidth - 2);
 
   u8g2.drawFrame(0, barY, textAreaWidth, barHeight);
@@ -112,7 +128,6 @@ void drawScreen() {
   }
 
   int volumeHeight = map(currentVolume, 0, 100, 0, 30);
-
   int volumeX = 128 - volumeBarWidth;
 
   u8g2.drawFrame(volumeX, 0, volumeBarWidth, 32);
@@ -123,41 +138,74 @@ void drawScreen() {
 
 void sendSpotifyVolume(int volume) {
   if (WiFi.status() != WL_CONNECTED) return;
+  if (activeDeviceId.length() == 0) {
+    Serial.println("No active device ID!");
+    return;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
 
   HTTPClient http;
-  String url = "https://api.spotify.com/v1/me/player/volume?volume_percent=" + String(volume);
 
-  http.begin(url);
+  String url =
+    "https://api.spotify.com/v1/me/player/volume"
+    "?device_id=" + activeDeviceId +
+    "&volume_percent=" + String(volume);
+
+  http.begin(client, url);
   http.addHeader("Authorization", "Bearer " + spotifyAccessToken);
   http.addHeader("Content-Length", "0");
 
-  int code = http.PUT("");
-  Serial.print("Volume HTTP: ");
+  int code = http.sendRequest("PUT");
+
+  Serial.print("Volume HTTP Code: ");
   Serial.println(code);
+
+  if (code != 204) {
+    Serial.println("Volume change failed:");
+    Serial.println(http.getString());
+  }
 
   http.end();
 }
 
+
 void fetchPlaybackInfo() {
   if (WiFi.status() != WL_CONNECTED) return;
 
+  WiFiClientSecure client;
+  client.setInsecure();
+
   HTTPClient http;
-  http.begin("https://api.spotify.com/v1/me/player");
+  http.begin(client, "https://api.spotify.com/v1/me/player");
   http.addHeader("Authorization", "Bearer " + spotifyAccessToken);
 
   int code = http.GET();
+
+  Serial.print("Playback HTTP Code: ");
+  Serial.println(code);
+
   if (code == 200) {
     String payload = http.getString();
+    Serial.println("JSON size: " + String(payload.length()));
 
-    DynamicJsonDocument doc(4096);
-    if (!deserializeJson(doc, payload)) {
-      currentSong = doc["item"]["name"].as<String>();
-      currentArtist = doc["item"]["artists"][0]["name"].as<String>();
+    DynamicJsonDocument doc(12288);
 
-      progressMs = doc["progress_ms"].as<int>();
-      durationMs = doc["item"]["duration_ms"].as<int>();
+    if (deserializeJson(doc, payload) == DeserializationError::Ok) {
+      currentSong = doc["item"]["name"] | "";
+      currentArtist = doc["item"]["artists"][0]["name"] | "";
+      progressMs = doc["progress_ms"] | 0;
+      durationMs = doc["item"]["duration_ms"] | 1;
+      currentVolume = doc["device"]["volume_percent"] | 0;
+      activeDeviceId = doc["device"]["id"] | "";
 
-      currentVolume = doc["device"]["volume_percent"].as<int>();
+      Serial.println("Song: " + currentSong);
+      Serial.println("Artist: " + currentArtist);
+      Serial.println("Volume: " + String(currentVolume));
+      Serial.println("Device: " + activeDeviceId);
+    } else {
+      Serial.println("JSON ERROR");
     }
   }
 
