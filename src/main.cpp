@@ -1,190 +1,165 @@
-#include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
-#include <Wire.h>
 #include <U8g2lib.h>
+#include <Wire.h>
 #include <ArduinoJson.h>
 
-// ==========================
-//  TOGGLES
-// ==========================
-#define USE_VOLUME   false
-#define USE_DISPLAY  true
-
-#define POT_PIN 34
-
-#if USE_DISPLAY
-U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
-#endif
+void sendSpotifyVolume(int volume);
+void drawScreen();
+void fetchPlaybackInfo();
 
 const char* ssid = "";
 const char* password = "";
-const char* api_url = "https://nostep.xyz/api/lastfm";
+String spotifyAccessToken = "";
 
-unsigned long lastVolumeChange = 0;
-unsigned long lastFetch = 0;
-
+const int potPin = 34;
 int lastVolume = -1;
-int smoothedRaw = 0;
-
-bool showingVolume = false;
 
 String currentSong = "";
-String lastDisplayed = "";
+String currentArtist = "";
+int currentVolume = 0;
+int progressMs = 0;
+int durationMs = 1;
 
-#if USE_DISPLAY
-void showTextDynamic(String text) {
+int scrollOffset = 0;
+unsigned long lastScroll = 0;
+const int scrollSpeed = 30;
 
-  if (text == lastDisplayed) return;
-  lastDisplayed = text;
+unsigned long lastUpdate = 0;
+const unsigned long updateInterval = 2000;
 
+U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(
+  U8G2_R0, U8X8_PIN_NONE, 22, 21
+);
+
+void setup() {
+  Serial.begin(115200);
+
+  u8g2.begin();
+  u8g2.setFont(u8g2_font_7x14_tf);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(300);
+  }
+
+  fetchPlaybackInfo();
+}
+
+void loop() {
+  int raw = analogRead(potPin);
+  int volume = map(raw, 0, 4095, 0, 100);
+
+  if (abs(volume - lastVolume) > 3) {
+    sendSpotifyVolume(volume);
+    lastVolume = volume;
+  }
+
+  if (millis() - lastUpdate > updateInterval) {
+    fetchPlaybackInfo();
+    lastUpdate = millis();
+  }
+
+  drawScreen();
+  delay(30);
+}
+
+void drawScreen() {
   u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_unifont_t_korean2);
 
-  int textWidth = u8g2.getUTF8Width(text.c_str());
+  u8g2.setFont(u8g2_font_7x14_tf);
 
-  if (textWidth > 128) {
-    int splitIndex = text.length() / 2;
-    String line1 = text.substring(0, splitIndex);
-    String line2 = text.substring(splitIndex);
+  const int volumeBarWidth = 12;
+  const int padding = 6;
+  const int textAreaWidth = 128 - volumeBarWidth - padding;
 
-    u8g2.drawUTF8(0, 14, line1.c_str());
-    u8g2.drawUTF8(0, 30, line2.c_str());
+  String line1 = currentSong + " - " + currentArtist;
+  int textWidth = u8g2.getStrWidth(line1.c_str());
+
+  u8g2.setClipWindow(
+    0,              // left
+    0,              // top
+    textAreaWidth,  // right boundary
+    16              // text area height
+  );
+
+  if (textWidth <= textAreaWidth) {
+    int x = (textAreaWidth - textWidth) / 2;
+    u8g2.drawStr(x, 14, line1.c_str());
+  } else {
+    if (millis() - lastScroll > scrollSpeed) {
+      scrollOffset++;
+      lastScroll = millis();
+    }
+
+    if (scrollOffset > textWidth + 30)
+      scrollOffset = 0;
+
+    u8g2.drawStr(-scrollOffset, 14, line1.c_str());
   }
-  else {
-    int x = (128 - textWidth) / 2;
-    u8g2.drawUTF8(x, 22, text.c_str());
+
+  u8g2.setMaxClipWindow();
+
+  int barY = 20;
+  int barHeight = 6;
+
+  int progressWidth = map(progressMs, 0, durationMs, 0, textAreaWidth - 2);
+
+  u8g2.drawFrame(0, barY, textAreaWidth, barHeight);
+
+  if (progressWidth > 2) {
+    u8g2.drawBox(1, barY + 1, progressWidth - 2, barHeight - 2);
   }
+
+  int volumeHeight = map(currentVolume, 0, 100, 0, 30);
+
+  int volumeX = 128 - volumeBarWidth;
+
+  u8g2.drawFrame(volumeX, 0, volumeBarWidth, 32);
+  u8g2.drawBox(volumeX + 3, 32 - volumeHeight, 6, volumeHeight);
 
   u8g2.sendBuffer();
 }
-#else
-void showTextDynamic(String text) {}
-#endif
 
-void connectWiFi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-  }
-}
-
-void fetchNowPlaying() {
-
+void sendSpotifyVolume(int volume) {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  WiFiClientSecure client;
-  client.setInsecure();
-
   HTTPClient http;
-  http.begin(client, api_url);
+  String url = "https://api.spotify.com/v1/me/player/volume?volume_percent=" + String(volume);
 
-  int httpCode = http.GET();
+  http.begin(url);
+  http.addHeader("Authorization", "Bearer " + spotifyAccessToken);
+  http.addHeader("Content-Length", "0");
 
-  if (httpCode == 200) {
-
-    String payload = http.getString();
-    JsonDocument doc;
-
-    if (deserializeJson(doc, payload)) {
-      currentSong = "JSON Error";
-      http.end();
-      return;
-    }
-
-    if (!doc["success"] ||
-        doc["nowPlaying"].isNull() ||
-        !doc["nowPlaying"]["isNowPlaying"] ||
-        doc["nowPlaying"]["name"].isNull()) {
-
-      currentSong = "Nothing Playing";
-      http.end();
-      return;
-    }
-
-    String name = doc["nowPlaying"]["name"].as<String>();
-    String artist = doc["nowPlaying"]["artist"].as<String>();
-
-    if (artist == "Unknown" || artist.length() == 0)
-      currentSong = name;
-    else
-      currentSong = name + " - " + artist;
-  }
-  else {
-    currentSong = "HTTP Error";
-  }
+  int code = http.PUT("");
+  Serial.print("Volume HTTP: ");
+  Serial.println(code);
 
   http.end();
 }
 
-void setup() {
+void fetchPlaybackInfo() {
+  if (WiFi.status() != WL_CONNECTED) return;
 
-  Serial.begin(115200);
+  HTTPClient http;
+  http.begin("https://api.spotify.com/v1/me/player");
+  http.addHeader("Authorization", "Bearer " + spotifyAccessToken);
 
-#if USE_DISPLAY
-  Wire.begin(21, 22);
-  u8g2.begin();
-  u8g2.enableUTF8Print();
-  showTextDynamic("Booting...");
-#endif
+  int code = http.GET();
+  if (code == 200) {
+    String payload = http.getString();
 
-#if USE_VOLUME
-  analogReadResolution(12);
-  analogSetPinAttenuation(POT_PIN, ADC_11db);
-  pinMode(POT_PIN, INPUT);
-#endif
+    DynamicJsonDocument doc(4096);
+    if (!deserializeJson(doc, payload)) {
+      currentSong = doc["item"]["name"].as<String>();
+      currentArtist = doc["item"]["artists"][0]["name"].as<String>();
 
-  delay(1000);
+      progressMs = doc["progress_ms"].as<int>();
+      durationMs = doc["item"]["duration_ms"].as<int>();
 
-  connectWiFi();
-  fetchNowPlaying();
-
-#if USE_DISPLAY
-  showTextDynamic(currentSong);
-#endif
-}
-
-void loop() {
-
-#if USE_VOLUME
-  static int stableVolume = -1;
-  static unsigned long volumeStableTimer = 0;
-
-  int raw = analogRead(POT_PIN);
-  smoothedRaw = (smoothedRaw * 4 + raw) / 5;
-  int volume = map(smoothedRaw, 0, 4095, 0, 100);
-
-  if (abs(volume - stableVolume) > 4) {
-    stableVolume = volume;
-    volumeStableTimer = millis();
-  }
-
-  if (millis() - volumeStableTimer > 150) {
-    if (stableVolume != lastVolume) {
-      lastVolume = stableVolume;
-      lastVolumeChange = millis();
-      showingVolume = true;
-      showTextDynamic("Volume: " + String(lastVolume) + "%");
+      currentVolume = doc["device"]["volume_percent"].as<int>();
     }
   }
 
-  if (showingVolume) {
-    if (millis() - lastVolumeChange > 3000) {
-      showingVolume = false;
-      showTextDynamic(currentSong);
-    }
-  }
-#endif
-
-  if (!showingVolume) {
-    if (millis() - lastFetch > 10000) {
-      fetchNowPlaying();
-#if USE_DISPLAY
-      showTextDynamic(currentSong);
-#endif
-      lastFetch = millis();
-    }
-  }
+  http.end();
 }
