@@ -18,8 +18,8 @@
 U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 #endif
 
-const char* ssid = "Krushna";
-const char* password = "9324399960";
+const char* ssid = "";
+const char* password = "";
 const char* api_url = "https://nostep.xyz/api/lastfm";
 
 unsigned long lastVolumeChange = 0;
