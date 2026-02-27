@@ -4,19 +4,31 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
+#include "base64.h"
 
-
+void refreshAccessToken();
+void fetchPlaybackInfo();
 void sendSpotifyVolume(int volume);
 void drawScreen();
-void fetchPlaybackInfo();
-
 
 const char* ssid = "";
 const char* password = "";
-String spotifyAccessToken =
-  "";
+
+
+String spotifyAccessToken = "";
+unsigned long tokenExpiresAt = 0;
+// ================== Either One ==================
+const char* SPOTIFY_REFRESH_TOKEN = "";
+const char* SPOTIFY_CLIENT_ID     = "";
+const char* SPOTIFY_CLIENT_SECRET = "";
+
 
 const int potPin = 34;
+
+U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(
+  U8G2_R0, U8X8_PIN_NONE, 22, 21
+);
+
 
 String currentSong = "";
 String currentArtist = "";
@@ -30,17 +42,55 @@ int scrollOffset = 0;
 unsigned long lastScroll = 0;
 const int scrollSpeed = 30;
 
-
 unsigned long lastUpdate = 0;
 const unsigned long updateInterval = 2000;
-
 
 int lastVolume = -1;
 
 
-U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(
-  U8G2_R0, U8X8_PIN_NONE, 22, 21
-);
+void refreshAccessToken() {
+
+  if (millis() < tokenExpiresAt && spotifyAccessToken.length() > 0)
+    return;
+
+  Serial.println("Refreshing Spotify token...");
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+
+  http.begin(client, "https://accounts.spotify.com/api/token");
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+  String auth = String(SPOTIFY_CLIENT_ID) + ":" + SPOTIFY_CLIENT_SECRET;
+  String authBase64 = base64::encode(auth);
+  http.addHeader("Authorization", "Basic " + authBase64);
+
+  String body =
+    "grant_type=refresh_token&refresh_token=" +
+    String(SPOTIFY_REFRESH_TOKEN);
+
+  int httpCode = http.POST(body);
+
+  if (httpCode == 200) {
+    String payload = http.getString();
+
+    DynamicJsonDocument doc(2048);
+    deserializeJson(doc, payload);
+
+    spotifyAccessToken = doc["access_token"].as<String>();
+    int expiresIn = doc["expires_in"] | 3600;
+
+    tokenExpiresAt = millis() + (expiresIn - 60) * 1000;
+
+    Serial.println("New access token acquired!");
+  } else {
+    Serial.println("Token refresh failed:");
+    Serial.println(http.getString());
+  }
+
+  http.end();
+}
 
 
 void setup() {
@@ -58,19 +108,20 @@ void setup() {
     Serial.print(".");
   }
 
-  Serial.println("\nWiFi connected");
+  Serial.println("\nWiFi connected!");
   Serial.println(WiFi.localIP());
 
+  refreshAccessToken();
   fetchPlaybackInfo();
 }
 
+
 void loop() {
+
   int raw = analogRead(potPin);
   int volume = map(raw, 0, 4095, 0, 100);
 
   if (abs(volume - lastVolume) > 3) {
-    Serial.print("Sending volume: ");
-    Serial.println(volume);
     sendSpotifyVolume(volume);
     lastVolume = volume;
   }
@@ -84,7 +135,9 @@ void loop() {
   delay(30);
 }
 
+
 void drawScreen() {
+
   u8g2.clearBuffer();
 
   const int volumeBarWidth = 12;
@@ -122,7 +175,6 @@ void drawScreen() {
   int progressWidth = map(progressMs, 0, durationMs, 0, textAreaWidth - 2);
 
   u8g2.drawFrame(0, barY, textAreaWidth, barHeight);
-
   if (progressWidth > 2) {
     u8g2.drawBox(1, barY + 1, progressWidth - 2, barHeight - 2);
   }
@@ -136,16 +188,16 @@ void drawScreen() {
   u8g2.sendBuffer();
 }
 
+
 void sendSpotifyVolume(int volume) {
+
+  refreshAccessToken();
+
   if (WiFi.status() != WL_CONNECTED) return;
-  if (activeDeviceId.length() == 0) {
-    Serial.println("No active device ID!");
-    return;
-  }
+  if (activeDeviceId.length() == 0) return;
 
   WiFiClientSecure client;
   client.setInsecure();
-
   HTTPClient http;
 
   String url =
@@ -159,11 +211,8 @@ void sendSpotifyVolume(int volume) {
 
   int code = http.sendRequest("PUT");
 
-  Serial.print("Volume HTTP Code: ");
-  Serial.println(code);
-
   if (code != 204) {
-    Serial.println("Volume change failed:");
+    Serial.println("Volume failed:");
     Serial.println(http.getString());
   }
 
@@ -172,23 +221,22 @@ void sendSpotifyVolume(int volume) {
 
 
 void fetchPlaybackInfo() {
+
+  refreshAccessToken();
+
   if (WiFi.status() != WL_CONNECTED) return;
 
   WiFiClientSecure client;
   client.setInsecure();
-
   HTTPClient http;
+
   http.begin(client, "https://api.spotify.com/v1/me/player");
   http.addHeader("Authorization", "Bearer " + spotifyAccessToken);
 
   int code = http.GET();
 
-  Serial.print("Playback HTTP Code: ");
-  Serial.println(code);
-
   if (code == 200) {
     String payload = http.getString();
-    Serial.println("JSON size: " + String(payload.length()));
 
     DynamicJsonDocument doc(12288);
 
@@ -199,13 +247,6 @@ void fetchPlaybackInfo() {
       durationMs = doc["item"]["duration_ms"] | 1;
       currentVolume = doc["device"]["volume_percent"] | 0;
       activeDeviceId = doc["device"]["id"] | "";
-
-      Serial.println("Song: " + currentSong);
-      Serial.println("Artist: " + currentArtist);
-      Serial.println("Volume: " + String(currentVolume));
-      Serial.println("Device: " + activeDeviceId);
-    } else {
-      Serial.println("JSON ERROR");
     }
   }
 
