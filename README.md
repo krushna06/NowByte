@@ -1,6 +1,6 @@
 # 🎵 NowByte
 
-NowByte is a compact ESP32-powered “Now Playing” display that fetches my currently playing song information from my API.
+NowByte is a compact ESP32-powered Spotify project that lets you display playback information/status and control player volume.
 
 ## 🛠 Components Used
 
@@ -11,4 +11,4 @@ NowByte is a compact ESP32-powered “Now Playing” display that fetches my cur
 ---
 
 ## 📸 Project Image
-![NowByte Project](https://media.discordapp.net/attachments/899659621097152563/1473274207415701658/IMG_0175.jpg?ex=69959d07&is=69944b87&hm=223070748c98e31ae879199481256263d3f03205d1024499b27fa1b973a50e90&=&format=webp&width=724&height=966)
+<img src="imgs/IMG_0199.jpg" alt="NowByte Project" width="400" />
