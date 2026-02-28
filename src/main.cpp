@@ -10,20 +10,24 @@ void refreshAccessToken();
 void fetchPlaybackInfo();
 void sendSpotifyVolume(int volume);
 void drawScreen();
+void spotifyPlay();
+void spotifyPause();
 
 const char* ssid = "";
 const char* password = "";
 
-
 String spotifyAccessToken = "";
 unsigned long tokenExpiresAt = 0;
-// ================== Either One ==================
+
 const char* SPOTIFY_REFRESH_TOKEN = "";
 const char* SPOTIFY_CLIENT_ID     = "";
 const char* SPOTIFY_CLIENT_SECRET = "";
 
-
 const int potPin = 34;
+const int buttonPin = 25;
+
+bool lastButtonState = HIGH;
+bool isPlaying = false;
 
 U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(
   U8G2_R0, U8X8_PIN_NONE, 22, 21
@@ -49,7 +53,6 @@ int lastVolume = -1;
 
 
 void refreshAccessToken() {
-
   if (millis() < tokenExpiresAt && spotifyAccessToken.length() > 0)
     return;
 
@@ -111,6 +114,8 @@ void setup() {
   Serial.println("\nWiFi connected!");
   Serial.println(WiFi.localIP());
 
+  pinMode(buttonPin, INPUT_PULLUP);
+
   refreshAccessToken();
   fetchPlaybackInfo();
 }
@@ -126,6 +131,22 @@ void loop() {
     lastVolume = volume;
   }
 
+  bool buttonState = digitalRead(buttonPin);
+
+  if (lastButtonState == HIGH && buttonState == LOW) {
+    Serial.println("Button Pressed → Toggle Play/Pause");
+
+    if (isPlaying) {
+      spotifyPause();
+      isPlaying = false;
+    } else {
+      spotifyPlay();
+      isPlaying = true;
+    }
+  }
+
+  lastButtonState = buttonState;
+
   if (millis() - lastUpdate > updateInterval) {
     fetchPlaybackInfo();
     lastUpdate = millis();
@@ -137,7 +158,6 @@ void loop() {
 
 
 void drawScreen() {
-
   u8g2.clearBuffer();
 
   const int volumeBarWidth = 12;
@@ -190,7 +210,6 @@ void drawScreen() {
 
 
 void sendSpotifyVolume(int volume) {
-
   refreshAccessToken();
 
   if (WiFi.status() != WL_CONNECTED) return;
@@ -221,7 +240,6 @@ void sendSpotifyVolume(int volume) {
 
 
 void fetchPlaybackInfo() {
-
   refreshAccessToken();
 
   if (WiFi.status() != WL_CONNECTED) return;
@@ -234,7 +252,6 @@ void fetchPlaybackInfo() {
   http.addHeader("Authorization", "Bearer " + spotifyAccessToken);
 
   int code = http.GET();
-
   if (code == 200) {
     String payload = http.getString();
 
@@ -247,8 +264,44 @@ void fetchPlaybackInfo() {
       durationMs = doc["item"]["duration_ms"] | 1;
       currentVolume = doc["device"]["volume_percent"] | 0;
       activeDeviceId = doc["device"]["id"] | "";
+      isPlaying = doc["is_playing"] | false;
     }
   }
+
+  http.end();
+}
+
+
+void spotifyPlay() {
+  refreshAccessToken();
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+
+  http.begin(client, "https://api.spotify.com/v1/me/player/play");
+  http.addHeader("Authorization", "Bearer " + spotifyAccessToken);
+
+  int code = http.PUT("{}");
+  Serial.print("Play response: ");
+  Serial.println(code);
+
+  http.end();
+}
+
+void spotifyPause() {
+  refreshAccessToken();
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+
+  http.begin(client, "https://api.spotify.com/v1/me/player/pause");
+  http.addHeader("Authorization", "Bearer " + spotifyAccessToken);
+
+  int code = http.PUT("{}");
+  Serial.print("Pause response: ");
+  Serial.println(code);
 
   http.end();
 }
