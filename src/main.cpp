@@ -25,6 +25,7 @@ const char* SPOTIFY_CLIENT_SECRET = "";
 
 const int potPin = 34;
 const int buttonPin = 25;
+const int ledPin = 2;
 
 bool lastButtonState = HIGH;
 bool isPlaying = false;
@@ -32,7 +33,6 @@ bool isPlaying = false;
 U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(
   U8G2_R0, U8X8_PIN_NONE, 22, 21
 );
-
 
 String currentSong = "";
 String currentArtist = "";
@@ -48,9 +48,7 @@ const int scrollSpeed = 30;
 
 unsigned long lastUpdate = 0;
 const unsigned long updateInterval = 2000;
-
 int lastVolume = -1;
-
 
 void refreshAccessToken() {
   if (millis() < tokenExpiresAt && spotifyAccessToken.length() > 0)
@@ -95,7 +93,6 @@ void refreshAccessToken() {
   http.end();
 }
 
-
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -116,10 +113,12 @@ void setup() {
 
   pinMode(buttonPin, INPUT_PULLUP);
 
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW);
+
   refreshAccessToken();
   fetchPlaybackInfo();
 }
-
 
 void loop() {
 
@@ -139,9 +138,11 @@ void loop() {
     if (isPlaying) {
       spotifyPause();
       isPlaying = false;
+      digitalWrite(ledPin, LOW);
     } else {
       spotifyPlay();
       isPlaying = true;
+      digitalWrite(ledPin, HIGH);
     }
   }
 
@@ -150,12 +151,13 @@ void loop() {
   if (millis() - lastUpdate > updateInterval) {
     fetchPlaybackInfo();
     lastUpdate = millis();
+
+    digitalWrite(ledPin, isPlaying ? HIGH : LOW);
   }
 
   drawScreen();
   delay(30);
 }
-
 
 void drawScreen() {
   u8g2.clearBuffer();
@@ -208,7 +210,6 @@ void drawScreen() {
   u8g2.sendBuffer();
 }
 
-
 void sendSpotifyVolume(int volume) {
   refreshAccessToken();
 
@@ -237,7 +238,6 @@ void sendSpotifyVolume(int volume) {
 
   http.end();
 }
-
 
 void fetchPlaybackInfo() {
   refreshAccessToken();
@@ -270,7 +270,6 @@ void fetchPlaybackInfo() {
 
   http.end();
 }
-
 
 void spotifyPlay() {
   refreshAccessToken();
